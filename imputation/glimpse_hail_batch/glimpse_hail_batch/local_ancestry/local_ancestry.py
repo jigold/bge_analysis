@@ -62,9 +62,10 @@ class FlareSampleGroup:
 
 
 def flare(b: hb.Batch,
-          output_file: str,
+          output_dir: str,
           flare_file_exists: bool,
           sample_group: FlareSampleGroup,
+          phased_input: hb.ResourceFile,
           chunk: Chunk,
           samples_list: hb.ResourceFile,
           reference_panel: hb.ResourceFile,
@@ -98,21 +99,23 @@ def flare(b: hb.Batch,
         assert memory == 'highmem', memory
         memory_gib = int(7.5 * cpu) + 1
 
-    chunk_input = b.read_input(chunk.path)
+    reference = b.read_input(chunk.path)
 
-    j.declare_resource_group(phased={'vcf': '{root}.anc.vcf.gz',
-                                     'log': '{root}.log',
-                                     'model': '{model}.model',
-                                     'global_ancestry': '{root}.global.anc.gz'})
+    j.declare_resource_group(flare={'vcf': '{root}.anc.vcf.gz',
+                                    'log': '{root}.log',
+                                    'model': '{root}.model',
+                                    'global_ancestry': '{root}.global.anc.gz'})
+
+    if model is not None:
+        model_flag = f'model={model}'
+    else:
+        model_flag = ''
 
     flare_cmd = f'''
 set -e
 
-# Convert reference to vcf.bgz
-bcftools convert --threads {cpu} -O z -o {j.reference} {chunk_input}
-
-# Convert input to vcf.bgz
-
+bcftools convert --threads {cpu} -O z -o {j.reference} {reference}
+bcftools convert --threads {cpu} -O z -o {j.gt} {phased_input}
 
 java -Xmx{memory_gib}g -jar flare.jar \
     ref={j.reference} \
@@ -123,12 +126,13 @@ java -Xmx{memory_gib}g -jar flare.jar \
     probs=true \
     gt-samples={samples_list} \
     nthreads={cpu} \
-    seed=14235432
+    seed=14235432 \
+    {model_flag}
 '''
 
     j.command(flare_cmd)
 
-    b.write_output(j.vcf, output_file + '.vcf.bgz')
+    b.write_output(j.flare, output_dir)
 
     return j
 
@@ -144,10 +148,10 @@ async def run_sample_group(b: hb.Batch,
 
     flare_already_completed = [False for contig, chunks in contig_chunks.items() for _ in chunks]
 
-    flare_output_files = ...
+    flare_output_files = sample_group.get_flare_output_file_names(contig_chunks)
 
     if args['use_checkpoints']:
-        flare_already_completed = await bounded_gather(*[partial(file_exists, fs, flare_output_files[contig][chunk_idx] + '.vcf.bgz')
+        flare_already_completed = await bounded_gather(*[partial(file_exists, fs, flare_output_files[contig][chunk_idx] + '.anc.vcf.gz')
                                                                 for contig, chunks in contig_chunks.items()
                                                                 for chunk_idx, chunk in enumerate(chunks)],
                                                                 cancel_on_error=True)
@@ -164,16 +168,24 @@ async def run_sample_group(b: hb.Batch,
         for contig, chunks in contig_chunks.items():
             local_chunk_idx = 0
             for chunk in chunks:
-                flare_output_file = flare_output_files[contig][local_chunk_idx]
+                flare_output_root = flare_output_files[contig][local_chunk_idx]
 
                 flare_exists = flare_already_completed[global_chunk_idx]
 
+                model_file = None
+
+                phased_input = sample_group.phased_input(chunk)
+
                 flare_j = flare(b,
-                                flare_output_file,
+                                flare_output_root,
                                 flare_exists,
                                 sample_group,
+                                phased_input,
                                 chunk,
                                 samples_list_input,
+                                reference_panel_input,
+                                map_file,
+                                model_file,
                                 args['docker_flare'],
                                 args['flare_cpu'],
                                 args['flare_memory'],
