@@ -3,6 +3,7 @@ import os
 import io
 import base64
 import json
+import re
 import sys
 import pandas as pd
 from collections import defaultdict, namedtuple
@@ -16,7 +17,7 @@ from hailtop.aiotools.router_fs import RouterAsyncFS
 from hailtop.utils import bounded_gather
 
 from ..globals import file_exists
-from .jobs import flare, mt_to_vcf, vcf_to_mt, union_sample_groups_from_vcfs
+from .jobs import flare, mt_to_vcf, vcf_to_mt, union_sample_groups_from_mts
 from .sample_group import FlareSampleGroup, split_samples_into_groups
 
 
@@ -140,22 +141,31 @@ async def local_ancestry(args: dict):
                      backend=backend,
                      requester_pays_project=args['gcs_requester_pays_configuration'])
 
-    with hfs.open(args['manifest_file'], 'r') as f:
+    with hfs.open(args['reference_manifest'], 'r') as f:
         manifest = pd.read_csv(io.StringIO(f.read()), sep='\t')
 
     contigs = manifest[args['contig_col']].to_list()
-    input_files = manifest[args['input_file_col']].to_list()
     reference_files = manifest[args['reference_file_col']].to_list()
     map_files = manifest[args['map_file_col']].to_list()
 
     reference_panel = b.read_input(args['reference_panel'])
 
+    maybe_input_files = hfs.ls(args['input_file_dir'])
+    input_file_regex = re.compile(args['input_file_regex'])
+    input_files = []
+    for file in maybe_input_files:
+        match = input_file_regex.fullmatch(file.path)
+        if match is not None:
+            contig = match.groupdict()['contig']
+            input_files[contig] = file.path
+
     input_data_by_contig = {}
-    for contig, input_file, reference_file, map_file in zip(contigs, input_files, reference_files, map_files):
+    for contig, reference_file, map_file in zip(contigs, reference_files, map_files):
+        input_file = input_files[contig]
         input_data_by_contig[contig] = ContigData(contig,
-                                        input_file,
-                                        b.read_input(reference_file),
-                                        b.read_input(map_file))
+                                                  input_file,
+                                                  b.read_input(reference_file),
+                                                  b.read_input(map_file))
 
     sample_groups = split_samples_into_groups(args['sample_list'],
                                               args['sample_group_size'],
@@ -194,19 +204,19 @@ async def local_ancestry(args: dict):
 
         output_file = env.from_string(args['output_file']).render(contig=contig)
 
-        union_j = union_sample_groups_from_vcfs(b,
-                                                b.read_input(union_sample_groups_inputs_path),
-                                                output_file,
-                                                args['docker_hail'],
-                                                args['merge_vcf_cpu'],
-                                                args['merge_vcf_memory'],
-                                                args['merge_vcf_storage'],
-                                                args['billing_project'],
-                                                args['batch_remote_tmpdir'],
-                                                batch_regions,
-                                                args['use_checkpoints'],
-                                                contig,
-                                                args['n_partitions'])
+        union_j = union_sample_groups_from_mts(b,
+                                               b.read_input(union_sample_groups_inputs_path),
+                                               output_file,
+                                               args['docker_hail'],
+                                               args['union_sample_groups_cpu'],
+                                               args['union_sample_groups_memory'],
+                                               args['union_sample_groups_storage'],
+                                               args['billing_project'],
+                                               args['batch_remote_tmpdir'],
+                                               batch_regions,
+                                               args['use_checkpoints'],
+                                               contig,
+                                               args['n_partitions'])
 
         if union_j is not None:
             union_j.depends_on(*union_ligate_input_jobs.get(contig, []))

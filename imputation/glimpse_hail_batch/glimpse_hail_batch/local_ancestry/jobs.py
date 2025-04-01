@@ -15,6 +15,7 @@ def flare(b: hb.Batch,
           phased_input: hb.ResourceFile,
           samples_list: hb.ResourceFile,
           reference: hb.ResourceFile,
+          reference_type: str,
           reference_panel: hb.ResourceFile,
           map_file: hb.ResourceFile,
           model: Optional[hb.ResourceFile],
@@ -56,11 +57,20 @@ def flare(b: hb.Batch,
     else:
         model_flag = ''
 
+    if reference_type == 'bcf':
+        decompress_reference = f'''
+bcftools convert --threads {cpu} -O z -o {j.reference} {reference}
+'''
+    else:
+        decompress_reference = f'mv {reference} {j.reference}'
+
     flare_cmd = f'''
 set -e
 
+{decompress_reference}
+
 java -Xmx{memory_gib}g -jar flare.jar \
-    ref={reference} \
+    ref={j.reference} \
     ref-panel={reference_panel} \
     gt={phased_input} \
     map={map_file} \
@@ -68,8 +78,7 @@ java -Xmx{memory_gib}g -jar flare.jar \
     probs=true \
     gt-samples={samples_list} \
     nthreads={cpu} \
-    seed=14235432 \
-    {model_flag}
+    seed=14235432 {model_flag}
 '''
 
     j.command(flare_cmd)
@@ -214,19 +223,19 @@ hailctl config set batch/regions "{','.join(regions)}"
         hl.export_vcf(mt, output_path, tabix=True)
 
 
-def union_sample_groups_from_vcfs(b: hb.Batch,
-                                  vcf_paths: hb.ResourceFile,
-                                  output_path: str,
-                                  docker: str,
-                                  cpu: int,
-                                  memory: str,
-                                  storage: str,
-                                  billing_project: str,
-                                  remote_tmpdir: str,
-                                  regions: List[str],
-                                  use_checkpoints: bool,
-                                  contig: str,
-                                  n_partitions: int) -> Optional[Job]:
+def union_sample_groups_from_mts(b: hb.Batch,
+                                 mt_paths: hb.ResourceFile,
+                                 output_path: str,
+                                 docker: str,
+                                 cpu: int,
+                                 memory: str,
+                                 storage: str,
+                                 billing_project: str,
+                                 remote_tmpdir: str,
+                                 regions: List[str],
+                                 use_checkpoints: bool,
+                                 contig: str,
+                                 n_partitions: int) -> Optional[Job]:
     if use_checkpoints:
         if output_path.endswith('.vcf.bgz') and hfs.exists(output_path):
             return None
@@ -239,6 +248,6 @@ def union_sample_groups_from_vcfs(b: hb.Batch,
     j.storage(storage)
     j.memory(memory)
     j.spot(False)
-    j.call(_union, vcf_paths, output_path, billing_project, remote_tmpdir, regions, contig, n_partitions)
+    j.call(_union, mt_paths, output_path, billing_project, remote_tmpdir, regions, contig, n_partitions)
 
     return j
