@@ -25,7 +25,6 @@ async def submit(args):
         return f'{remote_tmpdir}/{tmpdir_path_prefix}/{os.path.basename(path)}'
 
     sample_manifest_cloud_file = cloud_prefix(args['sample_manifest'])
-    remove_samples_cloud_file = cloud_prefix(args['samples_to_remove'])
 
     backend = hb.ServiceBackend(billing_project=billing_project, regions=regions, remote_tmpdir=remote_tmpdir)
 
@@ -38,6 +37,7 @@ async def submit(args):
     j.image(args['docker_hail'])
 
     if args['samples_to_remove'] is not None:
+        remove_samples_cloud_file = cloud_prefix(args['samples_to_remove'])
         samples_to_remove_copy = {'from': args['samples_to_remove'], 'to': remove_samples_cloud_file}
         await copy_from_dict(files=[samples_to_remove_copy])
         local_remove_samples_file = '/samples_to_remove.tsv'
