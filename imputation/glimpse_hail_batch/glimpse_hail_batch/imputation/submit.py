@@ -25,6 +25,7 @@ async def submit(args):
         return f'{remote_tmpdir}/{tmpdir_path_prefix}/{os.path.basename(path)}'
 
     sample_manifest_cloud_file = cloud_prefix(args['sample_manifest'])
+    remove_samples_cloud_file = cloud_prefix(args['samples_to_remove'])
 
     backend = hb.ServiceBackend(billing_project=billing_project, regions=regions, remote_tmpdir=remote_tmpdir)
 
@@ -35,6 +36,14 @@ async def submit(args):
 
     j = b.new_bash_job(name='submit-jobs')
     j.image(args['docker_hail'])
+
+    if args['samples_to_remove'] is not None:
+        samples_to_remove_copy = {'from': args['samples_to_remove'], 'to': remove_samples_cloud_file}
+        await copy_from_dict(files=[samples_to_remove_copy])
+        local_remove_samples_file = '/samples_to_remove.tsv'
+        args['samples_to_remove'] = local_remove_samples_file
+        remove_samples_input = b.read_input(remove_samples_cloud_file)
+        j.command(f'mv {remove_samples_input} {local_remove_samples_file}')
 
     await copy_from_dict(
         files=[
@@ -133,6 +142,8 @@ if __name__ == '__main__':
     parser.add_argument('--gcs-requester-pays-configuration', type=str, required=False)
 
     parser.add_argument('--non-par-contigs', type=str, required=False)
+
+    parser.add_argument('--samples-to-remove', type=str, required=False)
 
     args = vars(parser.parse_args())
 

@@ -37,6 +37,7 @@ async def run_sample_group(b: hb.Batch,
                            ref_dict: hb.ResourceFile,
                            samples_per_copy_group: int,
                            prev_copy_cram_jobs: List[Job],
+                           samples_to_remove: List[str],
                            fs: RouterAsyncFS) -> Tuple[List[Job], Dict[str, Job]]:
     print(f'staging sample group {sample_group.name}')
 
@@ -99,7 +100,10 @@ async def run_sample_group(b: hb.Batch,
     n_variants_contig = {contig: sum(chunk.n_variants for chunk in chunks) for contig, chunks in contig_chunks.items()}
 
     if not skip_phasing:
-        crams_list = sample_group.write_cram_list()
+        # write the original cram list so we have it
+        sample_group.write_cram_list()
+
+        crams_list = sample_group.write_clean_cram_list(samples_to_remove)
         crams_list_input = b.read_input(crams_list)
 
         sample_ploidy_list = sample_group.write_sample_ploidy_list()
@@ -292,6 +296,15 @@ async def impute(args: dict):
     fasta_input = b.read_input_group(**{'fasta': args['fasta'], 'fasta.fai': f'{args["fasta"]}.fai'})
     ref_dict = b.read_input(args['ligate_ref_dict'])
 
+    if args['samples_to_remove'] is not None:
+        samples_to_remove = []
+        with hfs.open(args['samples_to_remove'], 'r') as f:
+            for line in f:
+                sample_id = line.rstrip('\n')
+                samples_to_remove.append(sample_id)
+    else:
+        samples_to_remove = []
+
     prev_copy_cram_jobs = []
     union_ligate_input_jobs = defaultdict(list)
     for sample_group in sample_groups:
@@ -303,6 +316,7 @@ async def impute(args: dict):
                                                                      ref_dict,
                                                                      args['samples_per_copy_group'],
                                                                      prev_copy_cram_jobs,
+                                                                     samples_to_remove,
                                                                      backend._fs)
 
         for contig, vcf_to_mt_j in vcf_to_mt_jobs.items():

@@ -189,6 +189,10 @@ class SampleGroup:
         return f'{self.temp_dir}/phase/crams.list'
 
     @property
+    def clean_cram_list_output_file(self):
+        return f'{self.temp_dir}/phase/crams.list.clean'
+
+    @property
     def sample_ploidy_list(self):
         return f'{self.temp_dir}/sample_ploidy.list'
 
@@ -286,6 +290,14 @@ class SampleGroup:
             for cram, cram_idx, sample_id in zip(self.local_crams, self.local_cram_indices, self.sample_ids):
                 f.write(f'{cram}##idx##{cram_idx} {sample_id}\n')
         return self.cram_list_output_file
+
+    def write_clean_cram_list(self, samples_to_remove: List[str]) -> str:
+        samples_to_remove = set(samples_to_remove)
+        with hfs.open(self.clean_cram_list_output_file, 'w') as f:
+            for cram, cram_idx, sample_id in zip(self.local_crams, self.local_cram_indices, self.sample_ids):
+                if sample_id not in samples_to_remove:
+                    f.write(f'{cram}##idx##{cram_idx} {sample_id}\n')
+        return self.clean_cram_list_output_file
 
     def write_sample_ploidy_list(self) -> str:
         with hfs.open(self.sample_ploidy_list, 'w') as f:
