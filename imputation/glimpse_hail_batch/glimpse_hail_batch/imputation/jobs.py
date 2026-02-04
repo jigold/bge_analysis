@@ -328,10 +328,60 @@ def ligate(b: hb.Batch,
                                       'md5sum': '{root}.md5sum'})
 
     chunk_files_str = '\n'.join([str(chunk.bcf) for chunk in chunk_outputs])
+    chunk_files_no_new_lines_str = " ".join([str(chunk.bcf) for chunk in chunk_outputs])
 
     touch_files_str = '\n'.join([f'touch {chunk.csi}' for chunk in chunk_outputs])
 
     ligate_cmd = f'''
+FILES="{chunk_files_no_new_lines_str}"
+
+# 1. Check if sample lists are identical using MD5 checksums
+#    (We sort the sample list so strictly distinct orders of the same samples don't trigger a rewrite)
+first_file=$(echo $FILES | awk '{{print $1}}')
+ref_hash=$(bcftools query -l "$first_file" | sort | md5sum)
+samples_identical=true
+
+for file in $FILES; do
+    curr_hash=$(bcftools query -l "$file" | sort | md5sum)
+    if [ "$ref_hash" != "$curr_hash" ]; then
+        samples_identical=false
+        break
+    fi
+done
+
+# 2. Conditional Logic
+if [ "$samples_identical" = false ]; then
+    echo "Samples differ. Filtering to common subset..."
+
+    # Calculate intersection
+    NUM_FILES=$(echo $FILES | wc -w)
+    echo $NUM_FILES
+
+    echo $FILES | xargs -n1 bcftools query -l | \
+      sort | \
+      uniq -c | \
+      awk -v n="$NUM_FILES" '$1 == n {{print $2}}' > common_samples.txt
+
+    mkdir -p /io/filtered_output/
+
+    # Clear/create the list file to ensure we start empty
+    touch input_list.txt
+
+    # Loop through FILES in the provided order
+    for file in $FILES; do
+      base=$(basename "$file")
+
+      # Filter to new path
+      bcftools view -S common_samples.txt --force-samples "$file" -Ob -o "/io/filtered_output/tmp.bcf"
+      mv /io/filtered_output/tmp.bcf $file
+      bcftools index $file  # Always index first
+      bcftools stats $file | grep "number of records:"
+    done
+
+else
+    echo "Samples are identical. Using original file list."
+fi
+
 cat > input_list.txt <<EOF
 {chunk_files_str}
 EOF
