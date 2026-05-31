@@ -59,7 +59,8 @@ class JobInfo:
     def should_be_rerun(self):
         return self.is_oom() or self.state in ('Failed', 'Error')
 
-    async def resubmit_with_more_resources(self, jg: bc.JobGroup) -> Optional[hb.Job]:
+    async def resubmit(self, jg: bc.JobGroup, more_resources: bool) -> Optional[hb.Job]:
+        """We also remove the checkpoint file in case it is corrupted."""
         global resources
 
         j = await jg._batch.get_job(self.job_id)
@@ -73,7 +74,12 @@ class JobInfo:
         if resource_index == -1 or resource_index == len(possible_resources) - 1:
             return None
 
-        new_cpu, new_memory = possible_resources[resource_index + 1]
+        if more_resources:
+            new_resource_index = resource_index + 1
+        else:
+            new_resource_index = resource_index
+
+        new_cpu, new_memory = possible_resources[new_resource_index]
 
         resources = {
             'cpu': str(new_cpu),
@@ -97,6 +103,12 @@ class JobInfo:
         cloudfuse = spec.get('gcsfuse')
         if cloudfuse is not None:
             cloudfuse = [(mount['bucket'], mount['mount_path'], mount['read_only']) for mount in spec['gcsfuse']]
+
+        checkpoint_file = attributes.get('checkpoint_file')
+        if checkpoint_file is not None and hfs.is_file(checkpoint_file):
+            hfs.remove(checkpoint_file)
+            with hfs.open(checkpoint_file, 'wb') as f:
+                await f.write(b"")
 
         j = jg.create_job(spec['process']['image'],
                           spec['process']['command'],
@@ -126,6 +138,7 @@ def heal(contig: str, billing_project: str, remote_tmpdir: str, max_attempts: in
 
     batch_id = int(os.environ['HAIL_BATCH_ID'])
     job_group_id = int(os.environ['HAIL_JOB_GROUP_ID'])
+    n_expected_chunks = int(os.environ['N_CHUNKS'])
 
     backend = hb.ServiceBackend(billing_project=billing_project, remote_tmpdir=remote_tmpdir)
     b = hb.Batch.from_batch_id(batch_id, backend=backend)
@@ -155,10 +168,10 @@ def heal(contig: str, billing_project: str, remote_tmpdir: str, max_attempts: in
                     latest_attempts[job.name] = job
                     job.attempt_number = n_attempts[job.name]
 
-            all_completed = all(j.state in ('Cancelled', 'Success') or (j.attempt_number >= max_attempts and j.state in ('Error', 'Failed'))
-                                for j in latest_attempts.values())
+            all_queued_have_completed = all(j.state in ('Cancelled', 'Success') or (j.attempt_number >= max_attempts and j.state in ('Error', 'Failed'))
+                                            for j in latest_attempts.values())
 
-            if all_completed:
+            if all_queued_have_completed and len(latest_attempts) == n_expected_chunks:
                 all_succeeded = all(j.state == 'Success' for j in latest_attempts.values())
                 if all_succeeded:
                     return
@@ -168,7 +181,8 @@ def heal(contig: str, billing_project: str, remote_tmpdir: str, max_attempts: in
             for j in latest_attempts.values():
                 if j.attempt_number < max_attempts and j.should_be_rerun():
                     print(f'resubmitting job {j.job_id} {j.name} with attempt number {j.attempt_number + 1}')
-                    await j.resubmit_with_more_resources(jg_bc)
+                    more_resources = j.is_oom()
+                    await j.resubmit(jg_bc, more_resources=more_resources)
                     should_resubmit |= True
 
             if should_resubmit:
@@ -183,11 +197,13 @@ async def heal_phase_jobs(b: ImputationJobSubmitter,
                           jg: ImputationJobGroup,
                           sample_group: SampleGroup,
                           contig: str,
+                          n_chunks: int,
                           docker: str,
                           billing_project: str,
                           remote_tmpdir: str,
                           max_attempts: int = 2) -> hb.Job:
     j = await jg.new_python_job(name=f'phase-heal/sample-group-{sample_group.sample_group_index}/{contig}')
+    j.env('N_CHUNKS', str(n_chunks))
     j.image(docker)
     j.cpu(0.25)
     j.call(heal, contig, billing_project, remote_tmpdir, max_attempts)
@@ -226,7 +242,8 @@ async def phase(b: ImputationJobSubmitter,
                               attributes={'sample-group-index': str(sample_group_index),
                                           'contig': str(chunk.chunk_contig),
                                           'chunk-index': str(chunk.chunk_idx),
-                                          'task': 'phase'})
+                                          'task': 'phase',
+                                          'checkpoint_file': glimpse_remote_checkpoint_file})
 
     j.image(docker)
     j.storage('20Gi')
