@@ -19,6 +19,7 @@ from typing import Dict, List, Tuple
 from .jobs import (
     copy_temp_crams_job, delete_temp_files_job, heal_phase_jobs, ligate, phase, union_sample_groups_from_vcfs, vcf_to_mt, write_success
 )
+from .utils import ImputationJobSubmitter, ImputationJobGroup
 from ..globals import Chunk, SampleGroup, file_exists, find_crams, find_chunks, get_ligate_storage_requirement, split_samples_into_groups
 
 
@@ -29,7 +30,7 @@ def flatten(xs: dict):
     return [elt for x in xs.values() for elt in x]
 
 
-async def run_sample_group(b: hb.Batch,
+async def run_sample_group(b: ImputationJobSubmitter,
                            args: dict,
                            contig_chunks: Dict[str, List[Chunk]],
                            sample_group: SampleGroup,
@@ -81,13 +82,13 @@ async def run_sample_group(b: hb.Batch,
             # to avoid copying jobs happening much sooner than the subsequent phasing
             # jobs. By making the jobs the same size, they will be scheduled in subsequent
             # order.
-            copy_j = copy_temp_crams_job(b,
-                                         jg,
-                                         sample_group,
-                                         idx,
-                                         idx + samples_per_copy_group,
-                                         args['phase_cpu'],
-                                         args['phase_memory'])
+            copy_j = await copy_temp_crams_job(b,
+                                               jg,
+                                               sample_group,
+                                               idx,
+                                               idx + samples_per_copy_group,
+                                               args['phase_cpu'],
+                                               args['phase_memory'])
 
             # this is really important to make sure that sample groups are copied when there's capacity for phasing jobs
             copy_j.depends_on(*prev_copy_cram_jobs)
@@ -112,14 +113,14 @@ async def run_sample_group(b: hb.Batch,
 
         global_chunk_idx = 0
         for contig, chunks in contig_chunks.items():
-            heal_j = heal_phase_jobs(b,
-                                     phasing_jg,
-                                     sample_group,
-                                     contig,
-                                     args['docker_hail'],
-                                     args['billing_project'],
-                                     args['batch_remote_tmpdir'],
-                                     args['phase_max_attempts'])
+            heal_j = await heal_phase_jobs(b,
+                                           phasing_jg,
+                                           sample_group,
+                                           contig,
+                                           args['docker_hail'],
+                                           args['billing_project'],
+                                           args['batch_remote_tmpdir'],
+                                           args['phase_max_attempts'])
             heal_j.depends_on(*copy_cram_jobs)
             phase_heal_jobs[contig].append(heal_j)
 
@@ -130,27 +131,27 @@ async def run_sample_group(b: hb.Batch,
                 phase_exists = phasing_already_completed[global_chunk_idx]
                 phase_checkpoint_file = phase_checkpoint_files[global_chunk_idx]
 
-                phase_j = phase(b,
-                                phasing_jg,
-                                phased_output_file,
-                                phase_exists,
-                                sample_group,
-                                chunk,
-                                sample_group.remote_cram_temp_dir,
-                                sample_group.mount_path,
-                                crams_list_input,
-                                phase_checkpoint_file,
-                                fasta_input,
-                                sample_ploidy_input,
-                                args['docker_glimpse'],
-                                args['phase_cpu'],
-                                args['phase_memory'],
-                                args['use_checkpoints'],
-                                args['phase_impute_reference_only_variants'],
-                                args['phase_call_indels'],
-                                args['phase_n_burn_in'],
-                                args['phase_n_main'],
-                                args['phase_effective_population_size'])
+                phase_j = await phase(b,
+                                      phasing_jg,
+                                      phased_output_file,
+                                      phase_exists,
+                                      sample_group,
+                                      chunk,
+                                      sample_group.remote_cram_temp_dir,
+                                      sample_group.mount_path,
+                                      crams_list_input,
+                                      phase_checkpoint_file,
+                                      fasta_input,
+                                      sample_ploidy_input,
+                                      args['docker_glimpse'],
+                                      args['phase_cpu'],
+                                      args['phase_memory'],
+                                      args['use_checkpoints'],
+                                      args['phase_impute_reference_only_variants'],
+                                      args['phase_call_indels'],
+                                      args['phase_n_burn_in'],
+                                      args['phase_n_main'],
+                                      args['phase_effective_population_size'])
 
                 if phase_j is not None:
                     phase_j.depends_on(*copy_cram_jobs)
@@ -166,18 +167,18 @@ async def run_sample_group(b: hb.Batch,
 
             ligate_storage_required = args['ligate_storage'] or get_ligate_storage_requirement(10, len(sample_group.samples), n_variants_contig[contig])
 
-            ligate_j = ligate(b,
-                              ligate_jg,
-                              sample_group,
-                              contig,
-                              args['docker_glimpse'],
-                              args['ligate_cpu'],
-                              args['ligate_memory'],
-                              ligate_storage_required,
-                              phased_inputs,
-                              ligated_output_files_by_contig[contig],
-                              ref_dict,
-                              args['use_checkpoints'])
+            ligate_j = await ligate(b,
+                                    ligate_jg,
+                                    sample_group,
+                                    contig,
+                                    args['docker_glimpse'],
+                                    args['ligate_cpu'],
+                                    args['ligate_memory'],
+                                    ligate_storage_required,
+                                    phased_inputs,
+                                    ligated_output_files_by_contig[contig],
+                                    ref_dict,
+                                    args['use_checkpoints'])
 
             if ligate_j is not None:
                 ligate_j.depends_on(*(copy_cram_jobs + phase_heal_jobs[contig]))
@@ -188,17 +189,17 @@ async def run_sample_group(b: hb.Batch,
         for contig, ligated_file in ligated_output_files_by_contig.items():
             output_path = vcf_to_mt_output_files_by_contig[contig]
 
-            vcf_to_mt_j = vcf_to_mt(b,
-                                    jg,
-                                    sample_group,
-                                    ligated_file + '.vcf.bgz',
-                                    output_path,
-                                    contig,
-                                    args['docker_hail'],
-                                    args['vcf_to_mt_cpu'],
-                                    args['vcf_to_mt_memory'],
-                                    args['vcf_to_mt_storage'],
-                                    args['use_checkpoints'])
+            vcf_to_mt_j = await vcf_to_mt(b,
+                                          jg,
+                                          sample_group,
+                                          ligated_file + '.vcf.bgz',
+                                          output_path,
+                                          contig,
+                                          args['docker_hail'],
+                                          args['vcf_to_mt_cpu'],
+                                          args['vcf_to_mt_memory'],
+                                          args['vcf_to_mt_storage'],
+                                          args['use_checkpoints'])
 
             if vcf_to_mt_j is not None:
                 vcf_to_mt_j.depends_on(*(copy_cram_jobs + phase_heal_jobs[contig]))
@@ -208,12 +209,12 @@ async def run_sample_group(b: hb.Batch,
 
     success_j = None
     if not args['use_checkpoints'] or not hfs.exists(sample_group.success_file):
-        success_j = write_success(b, jg, sample_group, args['docker_hail'])
+        success_j = await write_success(b, jg, sample_group, args['docker_hail'])
         success_j.depends_on(*(copy_cram_jobs + flatten(phase_heal_jobs) + list(ligate_jobs.values()) + list(vcf_to_mt_jobs.values())))
 
     if args['always_delete_temp_files'] or success_j is not None:
         delete_jobs = []
-        delete_j = delete_temp_files_job(b, jg, sample_group, args['save_checkpoints'])
+        delete_j = await delete_temp_files_job(b, jg, sample_group, args['save_checkpoints'])
         delete_j.depends_on(*(copy_cram_jobs + flatten(phase_heal_jobs)))
         delete_j.always_run(True)
         delete_jobs.append(delete_j)
@@ -241,13 +242,18 @@ async def impute(args: dict):
 
     batch_id = args['batch_id'] or os.environ.get('HAIL_BATCH_ID')
     if batch_id is not None:
-        b = hb.Batch.from_batch_id(int(batch_id),
+        b = ImputationJobSubmitter.from_batch_id(max_jobs_in_flight=args['max_jobs_in_flight'],
+                                                 batch_id=int(batch_id),
+                                                 backend=backend,
+                                                 requester_pays_project=args['gcs_requester_pays_configuration'])
+        await b.start()
+    else:
+        b = ImputationJobSubmitter(max_jobs_in_flight=args['max_jobs_in_flight'],
+                                   name=batch_name,
                                    backend=backend,
                                    requester_pays_project=args['gcs_requester_pays_configuration'])
-    else:
-        b = hb.Batch(name=batch_name,
-                     backend=backend,
-                     requester_pays_project=args['gcs_requester_pays_configuration'])
+
+    await b.start()
 
     mount_point = '/crams/'
 
@@ -323,26 +329,27 @@ async def impute(args: dict):
 
         output_file = env.from_string(args['output_file']).render(contig=contig)
 
-        union_j = union_sample_groups_from_vcfs(b,
-                                                union_contig_jg,
-                                                b.read_input(union_sample_groups_inputs_path),
-                                                output_file,
-                                                args['docker_hail'],
-                                                args['union_sample_groups_cpu'],
-                                                args['union_sample_groups_memory'],
-                                                args['union_sample_groups_storage'],
-                                                args['billing_project'],
-                                                args['batch_remote_tmpdir'],
-                                                batch_regions,
-                                                args['use_checkpoints'],
-                                                contig,
-                                                len(chunks))
+        union_j = await union_sample_groups_from_vcfs(b,
+                                                      union_contig_jg,
+                                                      b.read_input(union_sample_groups_inputs_path),
+                                                      output_file,
+                                                      args['docker_hail'],
+                                                      args['union_sample_groups_cpu'],
+                                                      args['union_sample_groups_memory'],
+                                                      args['union_sample_groups_storage'],
+                                                      args['billing_project'],
+                                                      args['batch_remote_tmpdir'],
+                                                      batch_regions,
+                                                      args['use_checkpoints'],
+                                                      contig,
+                                                      len(chunks))
 
         if union_j is not None:
             union_j.depends_on(*union_ligate_input_jobs.get(contig, []))
 
     b.run(wait=False, disable_progress_bar=True)
 
+    await b.close()
     backend.close()
 
 
