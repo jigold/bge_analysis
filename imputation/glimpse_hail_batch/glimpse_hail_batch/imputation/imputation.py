@@ -244,12 +244,14 @@ async def impute(args: dict):
     batch_id = args['batch_id'] or os.environ.get('HAIL_BATCH_ID')
     if batch_id is not None:
         b = ImputationJobSubmitter.from_batch_id(max_jobs_in_flight=args['max_jobs_in_flight'],
+                                                 ramp_up_minutes=args['ramp_up_minutes'],
                                                  batch_id=int(batch_id),
                                                  backend=backend,
                                                  requester_pays_project=args['gcs_requester_pays_configuration'])
         await b.start()
     else:
         b = ImputationJobSubmitter(max_jobs_in_flight=args['max_jobs_in_flight'],
+                                   ramp_up_minutes=args['ramp_up_minutes'],
                                    name=batch_name,
                                    backend=backend,
                                    requester_pays_project=args['gcs_requester_pays_configuration'])

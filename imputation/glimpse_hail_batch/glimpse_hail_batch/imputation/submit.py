@@ -104,6 +104,7 @@ if __name__ == '__main__':
     parser.add_argument('--save-checkpoints', action='store_true', required=False)
     parser.add_argument('--always-delete-temp-files', action='store_true', required=False)
     parser.add_argument('--max-jobs-in-flight', type=int, default=750)
+    parser.add_argument('--ramp-up-minutes', type=int, default=30)
 
     # Extra phase arguments
     parser.add_argument('--phase-cpu', type=int, required=True)
