@@ -352,7 +352,7 @@ async def impute(args: dict):
 
     b.run(wait=False, disable_progress_bar=True)
 
-    await b.close()
+    b.close()
     backend.close()
 
 
