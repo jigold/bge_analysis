@@ -40,6 +40,17 @@ for cpu in (1, 2, 4, 8, 16):
         possible_resources.append((cpu, memory))
 
 
+async def get_already_submitted_job(jg: ImputationJobGroup, name: str) -> Optional[hb.Job]:
+    if jg._new_submission:
+        return None
+
+    jobs = [j async for j in jg._async_job_group.jobs(f'name = {name}')]
+    if len(jobs) != 0:
+        assert len(jobs) == 1
+        return jg.get_job(jobs[0]['job_id'])
+    return None
+
+
 class JobInfo:
     @staticmethod
     def from_json(d: dict):
@@ -201,8 +212,14 @@ async def heal_phase_jobs(b: ImputationJobSubmitter,
                           docker: str,
                           billing_project: str,
                           remote_tmpdir: str,
-                          max_attempts: int = 2) -> hb.Job:
-    j = await jg.new_python_job(name=f'phase-heal/sample-group-{sample_group.sample_group_index}/{contig}')
+                          max_attempts: int = 2) -> Optional[hb.Job]:
+    name = f'phase-heal/sample-group-{sample_group.sample_group_index}/{contig}'
+
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
+
+    j = await jg.new_python_job(name=name)
     j.env('N_CHUNKS', str(n_chunks))
     j.image(docker)
     j.cpu(0.25)
@@ -233,12 +250,17 @@ async def phase(b: ImputationJobSubmitter,
                 effective_population_size: Optional[int]) -> Optional[Job]:
     sample_group_index = sample_group.sample_group_index
 
+    name = f'phase/sample-group-{sample_group_index}/{chunk.chunk_contig}/{chunk.chunk_idx}'
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
+
     glimpse_checkpoint_file_input = b.read_input(glimpse_remote_checkpoint_file)
 
     if use_checkpoint and phase_file_exists:
         return None
 
-    j = await jg.new_bash_job(name=f'phase/sample-group-{sample_group_index}/{chunk.chunk_contig}/{chunk.chunk_idx}',
+    j = await jg.new_bash_job(name=name,
                               attributes={'sample-group-index': str(sample_group_index),
                                           'contig': str(chunk.chunk_contig),
                                           'chunk-index': str(chunk.chunk_idx),
@@ -334,7 +356,12 @@ async def ligate(b: ImputationJobSubmitter,
     if use_checkpoint and hfs.exists(output_file + '.vcf.bgz'):
         return None
 
-    j = await jg.new_bash_job(name=f'ligate/sample-group-{sample_group.sample_group_index}/{contig}',
+    name = f'ligate/sample-group-{sample_group.sample_group_index}/{contig}'
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
+
+    j = await jg.new_bash_job(name=name,
                               attributes={'task': 'ligate'})
     j.image(docker)
     j.cpu(cpu)
@@ -385,7 +412,12 @@ async def delete_temp_files_job(b: ImputationJobSubmitter,
                                 jg: ImputationJobGroup,
                                 sample_group: SampleGroup,
                                 save_checkpoints: bool) -> Job:
-    j = await jg.new_bash_job(attributes={'name': f'delete/sample-group-{sample_group.sample_group_index}',
+    name = f'delete/sample-group-{sample_group.sample_group_index}'
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
+
+    j = await jg.new_bash_job(attributes={'name': name,
                                           'task': 'delete'})
     j.cpu(1)
     j.image('google/cloud-sdk:512.0.0-slim')
@@ -407,7 +439,12 @@ async def delete_temp_files_job(b: ImputationJobSubmitter,
 
 
 async def write_success(b: ImputationJobSubmitter, jg: ImputationJobGroup, sample_group: SampleGroup, docker: str) -> Job:
-    j = await jg.new_bash_job(attributes={'name': f'write-success/sample-group-{sample_group.sample_group_index}',
+    name = f'write-success/sample-group-{sample_group.sample_group_index}'
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
+
+    j = await jg.new_bash_job(attributes={'name': name,
                                           'task': 'write-success'})
     j.cpu(1)
     j.image(docker)
@@ -450,10 +487,15 @@ async def vcf_to_mt(b: ImputationJobSubmitter,
                     memory: str,
                     storage: str,
                     use_checkpoint: bool) -> Optional[Job]:
+    name = f'vcf-to-mt/sample-group-{sample_group.sample_group_index}/{contig}'
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
+
     if use_checkpoint and hfs.exists(output_path + '/_SUCCESS'):
         return None
 
-    j = await jg.new_python_job(attributes={'name': f'vcf-to-mt/sample-group-{sample_group.sample_group_index}/{contig}',
+    j = await jg.new_python_job(attributes={'name': name,
                                             'task': 'vcf-to-mt'})
     j.cpu(cpu)
     j.image(docker)
@@ -581,13 +623,19 @@ async def union_sample_groups_from_vcfs(b: ImputationJobSubmitter,
                                         use_checkpoints: bool,
                                         contig: str,
                                         n_partitions: int) -> Optional[Job]:
+    name = f'union/{contig}'
+
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
+
     if use_checkpoints:
         if output_path.endswith('.vcf.bgz') and hfs.exists(output_path):
             return None
         if output_path.endswith('.mt') and hfs.exists(output_path + '/_SUCCESS'):
             return None
 
-    j = await jg.new_python_job(attributes={'name': f'union/{contig}'})
+    j = await jg.new_python_job(attributes={'name': name})
     j.cpu(cpu)
     j.image(docker)
     j.storage(storage)

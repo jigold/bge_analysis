@@ -265,7 +265,7 @@ async def impute(args: dict):
                          args['cram_path_col'],
                          args['cram_index_path_col'],
                          args['sex_col'],
-                         args['female_code'],
+                         args['male_code'],
                          args['n_samples'])
 
     sample_groups = split_samples_into_groups(samples,

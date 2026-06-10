@@ -83,7 +83,7 @@ if __name__ == '__main__':
     parser.add_argument('--cram-path-col', type=str, required=True)
     parser.add_argument('--cram-index-path-col', type=str, required=True)
     parser.add_argument('--sex-col', type=str, required=False)
-    parser.add_argument('--female-code', type=str, required=False)
+    parser.add_argument('--male-code', type=str, required=False)
 
     parser.add_argument('--n-samples', type=int, required=False)
 
