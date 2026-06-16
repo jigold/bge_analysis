@@ -18,11 +18,15 @@ async def copy_temp_crams_job(b: ImputationJobSubmitter,
                               cpu: int,
                               memory: str) -> Job:
     # this job is idempotent because we use the -n or no-clobber option
+    name = f'copy/sample-group-{sample_group.sample_group_index}/{start}-{end}'
+    maybe_j = await get_already_submitted_job(jg, name)
+    if maybe_j is not None:
+        return maybe_j
 
     copy_list = sample_group.write_gcloud_cram_copy_list(start, end)
     copy_list_input = b.read_input(copy_list)
 
-    j = await jg.new_bash_job(name=f'copy/sample-group-{sample_group.sample_group_index}/{start}-{end}',
+    j = await jg.new_bash_job(name=name,
                               attributes={'task': 'copy'})
     j.image('google/cloud-sdk:512.0.0-slim')
 
@@ -44,10 +48,18 @@ async def get_already_submitted_job(jg: ImputationJobGroup, name: str) -> Option
     if jg._new_submission:
         return None
 
-    jobs = [j async for j in jg._async_job_group.jobs(f'name = {name}')]
+    if jg._batch is None:
+        return None
+
+    if jg._batch._async_batch is None:
+        return None
+
+    jobs = [j async for j in jg._batch._async_batch.jobs(f'name = {name}', version=2)]
+
     if len(jobs) != 0:
         assert len(jobs) == 1
         return jg.get_job(jobs[0]['job_id'])
+    assert len(jobs) == 0
     return None
 
 
@@ -157,17 +169,19 @@ def heal(contig: str, billing_project: str, remote_tmpdir: str, max_attempts: in
 
     PHASE_JOB_NAME_REGEX = re.compile(f'^phase/.*/{contig}/.*')
 
+    print(f'expecting {n_expected_chunks} chunks')
+
     async def _heal(b, jg):
         b_bc = b._async_batch
         jg_bc = jg._async_job_group
 
         while True:
-            print('healing jobs...')
+            print('healing jobs...', flush=True)
 
             job_info = [JobInfo.from_json(j) async for j in jg_bc.jobs()
                         if PHASE_JOB_NAME_REGEX.fullmatch(j['name']) is not None]
 
-            print(f'found {len(job_info)} attempts')
+            print(f'found {len(job_info)} attempts', flush=True)
 
             n_attempts = Counter(j.name for j in job_info)
 
@@ -191,7 +205,7 @@ def heal(contig: str, billing_project: str, remote_tmpdir: str, max_attempts: in
             should_resubmit = False
             for j in latest_attempts.values():
                 if j.attempt_number < max_attempts and j.should_be_rerun():
-                    print(f'resubmitting job {j.job_id} {j.name} with attempt number {j.attempt_number + 1}')
+                    print(f'resubmitting job {j.job_id} {j.name} with attempt number {j.attempt_number + 1}', flush=True)
                     more_resources = j.is_oom()
                     await j.resubmit(jg_bc, more_resources=more_resources)
                     should_resubmit |= True
@@ -199,6 +213,7 @@ def heal(contig: str, billing_project: str, remote_tmpdir: str, max_attempts: in
             if should_resubmit:
                 await b_bc.submit()
 
+            print(f'sleep for 1 minute', flush=True)
             await asyncio.sleep(60)
 
     asyncio.run(_heal(b, jg))

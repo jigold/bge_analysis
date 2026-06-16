@@ -41,10 +41,10 @@ async def run_sample_group(b: ImputationJobSubmitter,
                            fs: RouterAsyncFS) -> Tuple[List[Job], Dict[str, Job]]:
     print(f'staging sample group {sample_group.name}')
 
-    jg = b.create_job_group(attributes={'name': sample_group.name,
-                                        'N': str(len(sample_group.samples))})
-    phasing_jg = jg.create_job_group(attributes={'name': f'{sample_group.name}/phase'})
-    ligate_jg = jg.create_job_group(attributes={'name': f'{sample_group.name}/ligate'})
+    jg = b.get_or_create_job_group(attributes={'name': sample_group.name,
+                                                     'N': str(len(sample_group.samples))})
+    phasing_jg = jg.get_or_create_job_group(attributes={'name': f'{sample_group.name}/phase'})
+    ligate_jg = jg.get_or_create_job_group(attributes={'name': f'{sample_group.name}/ligate'})
 
     sample_group.write_sample_group_dict()
     sample_group.write_sample_ploidy_list()
@@ -113,11 +113,14 @@ async def run_sample_group(b: ImputationJobSubmitter,
 
         global_chunk_idx = 0
         for contig, chunks in contig_chunks.items():
+            contig_n_chunks = len(chunks)
+            n_completed = sum(int(already_completed) for already_completed in phasing_already_completed[global_chunk_idx:global_chunk_idx + contig_n_chunks])
+
             heal_j = await heal_phase_jobs(b,
                                            phasing_jg,
                                            sample_group,
                                            contig,
-                                           len(chunks),
+                                           contig_n_chunks - n_completed,
                                            args['docker_hail'],
                                            args['billing_project'],
                                            args['batch_remote_tmpdir'],
@@ -236,124 +239,133 @@ async def impute(args: dict):
 
     batch_name = args['batch_name'] or 'glimpse-imputation'
 
-    backend = hb.ServiceBackend(billing_project=args['billing_project'],
-                                remote_tmpdir=args['batch_remote_tmpdir'],
-                                regions=batch_regions,
-                                gcs_requester_pays_configuration=args['gcs_requester_pays_configuration'])
+    backend = None
+    b = None
 
-    batch_id = args['batch_id'] or os.environ.get('HAIL_BATCH_ID')
-    if batch_id is not None:
-        b = ImputationJobSubmitter.from_batch_id(max_jobs_in_flight=args['max_jobs_in_flight'],
-                                                 ramp_up_minutes=args['ramp_up_minutes'],
-                                                 batch_id=int(batch_id),
-                                                 backend=backend,
-                                                 requester_pays_project=args['gcs_requester_pays_configuration'])
+    try:
+        backend = hb.ServiceBackend(billing_project=args['billing_project'],
+                                    remote_tmpdir=args['batch_remote_tmpdir'],
+                                    regions=batch_regions,
+                                    gcs_requester_pays_configuration=args['gcs_requester_pays_configuration'])
+
+        batch_id = args['batch_id'] or os.environ.get('HAIL_BATCH_ID')
+        print(f'batch id found is {batch_id}')
+        if batch_id is not None:
+            print(f'constructing prev created batch')
+            b = ImputationJobSubmitter.from_batch_id(max_jobs_in_flight=args['max_jobs_in_flight'],
+                                                     ramp_up_minutes=args['ramp_up_minutes'],
+                                                     batch_id=int(batch_id),
+                                                     backend=backend,
+                                                     requester_pays_project=args['gcs_requester_pays_configuration'])
+        else:
+            print(f'constructing new batch')
+            b = ImputationJobSubmitter(max_jobs_in_flight=args['max_jobs_in_flight'],
+                                       ramp_up_minutes=args['ramp_up_minutes'],
+                                       name=batch_name,
+                                       backend=backend,
+                                       requester_pays_project=args['gcs_requester_pays_configuration'])
+
         await b.start()
-    else:
-        b = ImputationJobSubmitter(max_jobs_in_flight=args['max_jobs_in_flight'],
-                                   ramp_up_minutes=args['ramp_up_minutes'],
-                                   name=batch_name,
-                                   backend=backend,
-                                   requester_pays_project=args['gcs_requester_pays_configuration'])
 
-    await b.start()
+        mount_point = '/crams/'
 
-    mount_point = '/crams/'
+        samples = find_crams(args['sample_manifest'],
+                             args['sample_id_col'],
+                             args['cram_path_col'],
+                             args['cram_index_path_col'],
+                             args['sex_col'],
+                             args['male_code'],
+                             args['n_samples'])
 
-    samples = find_crams(args['sample_manifest'],
-                         args['sample_id_col'],
-                         args['cram_path_col'],
-                         args['cram_index_path_col'],
-                         args['sex_col'],
-                         args['male_code'],
-                         args['n_samples'])
+        sample_groups = split_samples_into_groups(samples,
+                                                  args['sample_group_size'],
+                                                  args['staging_remote_tmpdir'],
+                                                  mount_point)
+        if args['sample_group_index'] is not None:
+            sample_groups = [sg for sg in sample_groups if sg.sample_group_index == args['sample_group_index']]
+            assert sample_groups
 
-    sample_groups = split_samples_into_groups(samples,
-                                              args['sample_group_size'],
-                                              args['staging_remote_tmpdir'],
-                                              mount_point)
-    if args['sample_group_index'] is not None:
-        sample_groups = [sg for sg in sample_groups if sg.sample_group_index == args['sample_group_index']]
-        assert sample_groups
+        non_par_contigs = args['non_par_contigs']
+        if non_par_contigs is None:
+            non_par_contigs = []
+        else:
+            non_par_contigs = non_par_contigs.split(',')
 
-    non_par_contigs = args['non_par_contigs']
-    if non_par_contigs is None:
-        non_par_contigs = []
-    else:
-        non_par_contigs = non_par_contigs.split(',')
+        chunks = find_chunks(args['reference_dir'],
+                             args['chunk_info_dir'],
+                             re.compile(args['binary_reference_file_regex']),
+                             re.compile(args['chunk_file_regex']),
+                             non_par_contigs=non_par_contigs,
+                             requested_contig=args['contig'],
+                             requested_chunk_index=args['chunk_index'],
+                             requester_pays_config=args['gcs_requester_pays_configuration'])
 
-    chunks = find_chunks(args['reference_dir'],
-                         args['chunk_info_dir'],
-                         re.compile(args['binary_reference_file_regex']),
-                         re.compile(args['chunk_file_regex']),
-                         non_par_contigs=non_par_contigs,
-                         requested_contig=args['contig'],
-                         requested_chunk_index=args['chunk_index'],
-                         requester_pays_config=args['gcs_requester_pays_configuration'])
+        print(f'found {len(chunks)} chunks')
+        print(f'found {len(sample_groups)} sample groups')
 
-    print(f'found {len(chunks)} chunks')
-    print(f'found {len(sample_groups)} sample groups')
+        contig_chunks = defaultdict(list)
+        for chunk in chunks:
+            contig_chunks[chunk.chunk_contig].append(chunk)
 
-    contig_chunks = defaultdict(list)
-    for chunk in chunks:
-        contig_chunks[chunk.chunk_contig].append(chunk)
+        fasta_input = b.read_input_group(**{'fasta': args['fasta'], 'fasta.fai': f'{args["fasta"]}.fai'})
+        ref_dict = b.read_input(args['ligate_ref_dict'])
 
-    fasta_input = b.read_input_group(**{'fasta': args['fasta'], 'fasta.fai': f'{args["fasta"]}.fai'})
-    ref_dict = b.read_input(args['ligate_ref_dict'])
+        prev_copy_cram_jobs = []
+        union_ligate_input_jobs = defaultdict(list)
+        for sample_group in sample_groups:
+            prev_copy_cram_jobs, vcf_to_mt_jobs = await run_sample_group(b,
+                                                                         args,
+                                                                         contig_chunks,
+                                                                         sample_group,
+                                                                         fasta_input,
+                                                                         ref_dict,
+                                                                         args['samples_per_copy_group'],
+                                                                         prev_copy_cram_jobs,
+                                                                         backend._fs)
 
-    prev_copy_cram_jobs = []
-    union_ligate_input_jobs = defaultdict(list)
-    for sample_group in sample_groups:
-        prev_copy_cram_jobs, vcf_to_mt_jobs = await run_sample_group(b,
-                                                                     args,
-                                                                     contig_chunks,
-                                                                     sample_group,
-                                                                     fasta_input,
-                                                                     ref_dict,
-                                                                     args['samples_per_copy_group'],
-                                                                     prev_copy_cram_jobs,
-                                                                     backend._fs)
+            for contig, vcf_to_mt_j in vcf_to_mt_jobs.items():
+                union_ligate_input_jobs[contig].append(vcf_to_mt_j)
 
-        for contig, vcf_to_mt_j in vcf_to_mt_jobs.items():
-            union_ligate_input_jobs[contig].append(vcf_to_mt_j)
+        union_sample_groups_jg = b.create_job_group(attributes={'name': 'union-sample-groups'})
 
-    union_sample_groups_jg = b.create_job_group(attributes={'name': 'union-sample-groups'})
+        for contig, chunks in contig_chunks.items():
+            union_contig_jg = union_sample_groups_jg.create_job_group(attributes={'name': f'union-sample-groups/{contig}',
+                                                                                  'contig': contig})
 
-    for contig, chunks in contig_chunks.items():
-        union_contig_jg = union_sample_groups_jg.create_job_group(attributes={'name': f'union-sample-groups/{contig}',
-                                                                              'contig': contig})
+            sample_group_mts = [sample_group.vcf_to_mt_output_file(contig) for sample_group in sample_groups]
 
-        sample_group_mts = [sample_group.vcf_to_mt_output_file(contig) for sample_group in sample_groups]
+            union_sample_groups_inputs_path = args['staging_remote_tmpdir'].rstrip('/') + f'/{contig}/sample_group_mts.txt'
+            with hfs.open(union_sample_groups_inputs_path, 'w') as f:
+                for mt_path in sample_group_mts:
+                    f.write(f'{mt_path}\n')
 
-        union_sample_groups_inputs_path = args['staging_remote_tmpdir'].rstrip('/') + f'/{contig}/sample_group_mts.txt'
-        with hfs.open(union_sample_groups_inputs_path, 'w') as f:
-            for mt_path in sample_group_mts:
-                f.write(f'{mt_path}\n')
+            output_file = env.from_string(args['output_file']).render(contig=contig)
 
-        output_file = env.from_string(args['output_file']).render(contig=contig)
+            union_j = await union_sample_groups_from_vcfs(b,
+                                                          union_contig_jg,
+                                                          b.read_input(union_sample_groups_inputs_path),
+                                                          output_file,
+                                                          args['docker_hail'],
+                                                          args['union_sample_groups_cpu'],
+                                                          args['union_sample_groups_memory'],
+                                                          args['union_sample_groups_storage'],
+                                                          args['billing_project'],
+                                                          args['batch_remote_tmpdir'],
+                                                          batch_regions,
+                                                          args['use_checkpoints'],
+                                                          contig,
+                                                          len(chunks))
 
-        union_j = await union_sample_groups_from_vcfs(b,
-                                                      union_contig_jg,
-                                                      b.read_input(union_sample_groups_inputs_path),
-                                                      output_file,
-                                                      args['docker_hail'],
-                                                      args['union_sample_groups_cpu'],
-                                                      args['union_sample_groups_memory'],
-                                                      args['union_sample_groups_storage'],
-                                                      args['billing_project'],
-                                                      args['batch_remote_tmpdir'],
-                                                      batch_regions,
-                                                      args['use_checkpoints'],
-                                                      contig,
-                                                      len(chunks))
+            if union_j is not None:
+                union_j.depends_on(*union_ligate_input_jobs.get(contig, []))
 
-        if union_j is not None:
-            union_j.depends_on(*union_ligate_input_jobs.get(contig, []))
+        b.run(wait=False, disable_progress_bar=True)
 
-    b.run(wait=False, disable_progress_bar=True)
-
-    b.close()
-    backend.close()
+    finally:
+        if b is not None:
+            await b.close()
+        if backend is not None:
+            backend.close()
 
 
 if __name__ == '__main__':

@@ -34,6 +34,7 @@ async def submit(args):
         b = hb.Batch(name=args['batch_name'], backend=backend)
 
     j = b.new_bash_job(name='submit-jobs')
+    j.spot(False)  # don't want this to get restarted if possible
     j.image(args['docker_hail'])
 
     await copy_from_dict(
@@ -50,7 +51,31 @@ async def submit(args):
     sample_manifest_input = b.read_input(sample_manifest_cloud_file)
 
     j.command(f'mv {sample_manifest_input} {local_sample_manifest}')
-    j.command(f'python3 -m glimpse_hail_batch.imputation.imputation "{shq(arguments_str)}"')
+    j.command(f'''
+while true; do
+    echo "Starting Python process at $(date)"
+    
+    # Reset exit code to 0 for each run
+    EXIT_CODE=0
+    
+    # By using '|| EXIT_CODE=$?', we catch the real error code 
+    # while preventing 'set -e' from instantly killing the container.
+    timeout 10m python3 -m glimpse_hail_batch.imputation.imputation "{shq(arguments_str)}" || EXIT_CODE=$?
+    
+    # 124 = GNU timeout
+    # 143 = Alpine/Busybox timeout (killed by SIGTERM)
+    if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 143 ]; then
+        echo "Process timed out after 10m (Exit Code $EXIT_CODE). Restarting in 1 second..."
+        sleep 1
+    elif [ "$EXIT_CODE" -eq 0 ]; then
+        echo "Process exited cleanly (Exit Code 0). Stopping loop."
+        break
+    else
+        echo "Process crashed or was killed externally (Exit Code $EXIT_CODE). Stopping loop."
+        break
+    fi
+done
+''')
 
     batch_handle = await b._async_run(wait=False, disable_progress_bar=True)
     assert batch_handle
@@ -104,7 +129,7 @@ if __name__ == '__main__':
     parser.add_argument('--save-checkpoints', action='store_true', required=False)
     parser.add_argument('--always-delete-temp-files', action='store_true', required=False)
     parser.add_argument('--max-jobs-in-flight', type=int, default=1000)
-    parser.add_argument('--ramp-up-minutes', type=int, default=45)
+    parser.add_argument('--ramp-up-minutes', type=int, default=75)
 
     # Extra phase arguments
     parser.add_argument('--phase-cpu', type=int, required=True)
@@ -137,6 +162,9 @@ if __name__ == '__main__':
     parser.add_argument('--non-par-contigs', type=str, required=False)
 
     args = vars(parser.parse_args())
+
+    if not args['use_checkpoints'] or not args['save_checkpoints']:
+        raise ValueError('not tested without using checkpoints. Specify to --use-checkpoints and --save-checkpoints')
 
     print('submitting jobs with the following parameters:')
     print(json.dumps(args, indent=4))
