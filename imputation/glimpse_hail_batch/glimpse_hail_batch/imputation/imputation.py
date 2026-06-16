@@ -42,7 +42,7 @@ async def run_sample_group(b: ImputationJobSubmitter,
     print(f'staging sample group {sample_group.name}')
 
     jg = b.get_or_create_job_group(attributes={'name': sample_group.name,
-                                                     'N': str(len(sample_group.samples))})
+                                               'N': str(len(sample_group.samples))})
     phasing_jg = jg.get_or_create_job_group(attributes={'name': f'{sample_group.name}/phase'})
     ligate_jg = jg.get_or_create_job_group(attributes={'name': f'{sample_group.name}/ligate'})
 
@@ -120,7 +120,7 @@ async def run_sample_group(b: ImputationJobSubmitter,
                                            phasing_jg,
                                            sample_group,
                                            contig,
-                                           contig_n_chunks - n_completed,
+                                           contig_n_chunks - n_completed,  # this is in case the submit-jobs job gets preempted
                                            args['docker_hail'],
                                            args['billing_project'],
                                            args['batch_remote_tmpdir'],

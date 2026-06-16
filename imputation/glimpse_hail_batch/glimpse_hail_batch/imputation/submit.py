@@ -51,31 +51,7 @@ async def submit(args):
     sample_manifest_input = b.read_input(sample_manifest_cloud_file)
 
     j.command(f'mv {sample_manifest_input} {local_sample_manifest}')
-    j.command(f'''
-while true; do
-    echo "Starting Python process at $(date)"
-    
-    # Reset exit code to 0 for each run
-    EXIT_CODE=0
-    
-    # By using '|| EXIT_CODE=$?', we catch the real error code 
-    # while preventing 'set -e' from instantly killing the container.
-    timeout 10m python3 -m glimpse_hail_batch.imputation.imputation "{shq(arguments_str)}" || EXIT_CODE=$?
-    
-    # 124 = GNU timeout
-    # 143 = Alpine/Busybox timeout (killed by SIGTERM)
-    if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 143 ]; then
-        echo "Process timed out after 10m (Exit Code $EXIT_CODE). Restarting in 1 second..."
-        sleep 1
-    elif [ "$EXIT_CODE" -eq 0 ]; then
-        echo "Process exited cleanly (Exit Code 0). Stopping loop."
-        break
-    else
-        echo "Process crashed or was killed externally (Exit Code $EXIT_CODE). Stopping loop."
-        break
-    fi
-done
-''')
+    j.command(f'python3 -m glimpse_hail_batch.imputation.imputation "{shq(arguments_str)}"')
 
     batch_handle = await b._async_run(wait=False, disable_progress_bar=True)
     assert batch_handle
