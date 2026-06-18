@@ -131,7 +131,7 @@ class JobInfo:
         if checkpoint_file is not None and hfs.is_file(checkpoint_file):
             hfs.remove(checkpoint_file)
             with hfs.open(checkpoint_file, 'wb') as f:
-                await f.write(b"")
+                f.write(b"")
 
         j = jg.create_job(spec['process']['image'],
                           spec['process']['command'],
