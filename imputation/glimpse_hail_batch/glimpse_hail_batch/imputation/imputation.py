@@ -19,7 +19,7 @@ from typing import Dict, List, Tuple
 from .jobs import (
     copy_temp_crams_job, delete_temp_files_job, heal_phase_jobs, ligate, phase, union_sample_groups_from_vcfs, vcf_to_mt, write_success
 )
-from .utils import ImputationJobSubmitter, ImputationJobGroup
+from .utils import ImputationJobSubmitter
 from ..globals import Chunk, SampleGroup, file_exists, find_crams, find_chunks, get_ligate_storage_requirement, split_samples_into_groups
 
 
@@ -326,11 +326,11 @@ async def impute(args: dict):
             for contig, vcf_to_mt_j in vcf_to_mt_jobs.items():
                 union_ligate_input_jobs[contig].append(vcf_to_mt_j)
 
-        union_sample_groups_jg = b.create_job_group(attributes={'name': 'union-sample-groups'})
+        union_sample_groups_jg = b.get_or_create_job_group(attributes={'name': 'union-sample-groups'})
 
         for contig, chunks in contig_chunks.items():
-            union_contig_jg = union_sample_groups_jg.create_job_group(attributes={'name': f'union-sample-groups/{contig}',
-                                                                                  'contig': contig})
+            union_contig_jg = union_sample_groups_jg.get_or_create_job_group(attributes={'name': f'union-sample-groups/{contig}',
+                                                                                         'contig': contig})
 
             sample_group_mts = [sample_group.vcf_to_mt_output_file(contig) for sample_group in sample_groups]
 

@@ -2,6 +2,7 @@ import asyncio
 from typing import Optional, Dict, cast
 
 import hailtop.batch as hb
+from hailtop.batch_client.client import Job as SyncJob
 from hailtop.batch_client.aioclient import Job, JobGroup as JobGroupBC
 from hailtop.batch import job, JobGroup
 from hailtop.utils import async_to_blocking
@@ -29,7 +30,7 @@ class ImputationJobGroup(hb.batch.JobGroup):
         bc_j = Job.submitted_job(self._batch, job_id)
         dummy_j = hb.Job(self._batch, self, 'foo')
         dummy_j._job_id = job_id
-        dummy_j._client_job = bc_j
+        dummy_j._client_job = SyncJob(bc_j)
         dummy_j._submitted = True
         return dummy_j
 
@@ -131,8 +132,6 @@ class ImputationJobSubmitter(hb.Batch):
 
     async def new_python_job(self, name: Optional[str] = None,
                              attributes: Optional[Dict[str, str]] = None) -> job.PythonJob:
-
-
         return await self._new_python_job(self._root_job_group, name=name, attributes=attributes)
 
     async def _new_bash_job(
@@ -172,8 +171,10 @@ class ImputationJobSubmitter(hb.Batch):
 
                 # 2. Calculate dynamic max capacity
                 elapsed = time_msecs() - self._start_time
+                buffer_msecs = 15 * 60 * 1000
+                elapsed_trimmed = max(0, elapsed - buffer_msecs)
                 if self.ramp_up_msecs > 0:
-                    fraction = min(1.0, elapsed / self.ramp_up_msecs)
+                    fraction = min(1.0, elapsed_trimmed / self.ramp_up_msecs)
                     current_max_jobs = max(5, 5 + int(self.max_jobs_in_flight * fraction))
                 else:
                     current_max_jobs = self.max_jobs_in_flight
